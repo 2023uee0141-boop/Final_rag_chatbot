@@ -1,0 +1,32 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.2.2; python_version < '3.12'
+torch==2.3.1; python_version >= '3.12'
+
+# Pin Transformers to a known-good 4.x version.
+# Very new 4.x releases may require newer Torch APIs (e.g. flex_attention), while
+# 5.x can break downstream libs like sentence-transformers.
+transformers==4.46.3
+
+# Transformers may import accelerate integration paths; keep it installed to avoid surprises.
+accelerate>=0.33.0
+
+streamlit
+langchain
+langchain-community
+pinecone
+langchain-groq
+sentence-transformers
+faiss-cpu
+python-dotenv
+pypdf
+rank-bm25
+duckduckgo-search
+ddgs
+langchain-text-splitters
+fastapi
+uvicorn[standard]
+python-multipart
+python-jose[cryptography]
+passlib
+pymongo
+certifi

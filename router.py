@@ -1,5 +1,14 @@
 from rank_bm25 import BM25Okapi
-from duckduckgo_search import DDGS
+import threading
+import time
+from typing import Any
+
+try:
+    # Newer package name
+    from ddgs import DDGS  # type: ignore
+except Exception:
+    # Legacy package name
+    from duckduckgo_search import DDGS  # type: ignore
 
 
 # ==========================================
@@ -111,9 +120,8 @@ def rerank_chunks(query, docs):
     """Rerank documents using BM25"""
     if not docs:
         return []
-    
-    corpus = [doc.page_content.split() for doc in docs]
-    bm25 = BM25Okapi(corpus)
+
+    bm25 = _get_bm25_index(docs)
     scores = bm25.get_scores(query.split())
 
     ranked = sorted(zip(docs, scores), key=lambda x: x[1], reverse=True)
@@ -126,27 +134,61 @@ def rerank_chunks(query, docs):
 
 def filter_relevant_chunks(llm, query, docs):
     """Filter documents by relevance score"""
-    filtered_docs = []
+    if not docs:
+        return []
 
-    for doc in docs:
-        prompt = f"""Rate the relevance of this chunk to the query on a scale 1-10.
-Respond with ONLY the number.
+    # Batch relevance scoring into a single LLM call (much faster than 1 call per chunk).
+    chunks = "\n\n".join(
+        [
+            f"[{i+1}] {doc.page_content[:500]}"
+            for i, doc in enumerate(docs)
+        ]
+    )
+
+    prompt = f"""You will select which chunks are relevant to the query.
 
 Query: {query}
 
-Chunk: {doc.page_content[:500]}"""
+Chunks:
+{chunks}
 
-        try:
-            response = llm.invoke(prompt).content.strip()
-            score = int(''.join(filter(str.isdigit, response.split()[0])))
-            
-            if score >= 7:
-                filtered_docs.append(doc)
-        except:
-            # If we can't parse score, include the doc
-            filtered_docs.append(doc)
+Return ONLY the numbers of chunks that are relevant (score 7-10), one per line.
+If none are relevant, return NONE.
+"""
 
-    return filtered_docs
+    try:
+        response = (llm.invoke(prompt).content or "").strip()
+        lower = response.lower()
+        if "none" in lower:
+            return []
+
+        picked: list[int] = []
+        for line in response.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            # Accept formats like "1", "[1]", "1.".
+            digits = "".join([c for c in line if c.isdigit()])
+            if not digits:
+                continue
+            idx = int(digits) - 1
+            if 0 <= idx < len(docs):
+                picked.append(idx)
+
+        if not picked:
+            # Conservative fallback: if parsing fails, keep all.
+            return docs
+        # Preserve order, de-dup.
+        seen = set()
+        out = []
+        for idx in picked:
+            if idx not in seen:
+                out.append(docs[idx])
+                seen.add(idx)
+        return out
+    except Exception:
+        # If anything goes wrong, don't block retrieval.
+        return docs
 
 
 # ==========================================
@@ -173,19 +215,83 @@ def remove_duplicates(docs):
 
 def web_search(query):
     """Search the web using DuckDuckGo"""
+    cached = _web_cache_get(query)
+    if cached is not None:
+        return cached
+
     try:
         results = []
         with DDGS() as ddgs:
-            search_results = ddgs.text(query, max_results=5)
+            # Keep this small: the app uses only top 3 anyway.
+            search_results = ddgs.text(query, max_results=3)
             for result in search_results:
                 results.append({
                     "title": result.get("title", ""),
                     "body": result.get("body", ""),
                     "link": result.get("href", "")
                 })
+        _web_cache_set(query, results)
         return results
-    except Exception as e:
-        return [{"title": "Error", "body": f"Web search failed: {str(e)}", "link": ""}]
+    except Exception:
+        _web_cache_set(query, [])
+        return []
+
+
+# ==========================================
+# INTERNAL CACHES (PER-PROCESS)
+# ==========================================
+
+_BM25_LOCK = threading.Lock()
+_BM25_CACHE: dict[tuple[int, int, int], BM25Okapi] = {}
+
+
+def _docs_fingerprint(docs: list[Any]) -> int:
+    if not docs:
+        return 0
+    try:
+        first = docs[0].page_content
+        last = docs[-1].page_content
+        return hash((len(first), len(last), first[:64], last[:64]))
+    except Exception:
+        return 0
+
+
+def _get_bm25_index(docs: list[Any]) -> BM25Okapi:
+    key = (id(docs), len(docs), _docs_fingerprint(docs))
+    with _BM25_LOCK:
+        cached = _BM25_CACHE.get(key)
+        if cached is not None:
+            return cached
+
+    corpus = [doc.page_content.split() for doc in docs]
+    bm25 = BM25Okapi(corpus)
+
+    with _BM25_LOCK:
+        _BM25_CACHE[key] = bm25
+    return bm25
+
+
+_WEB_LOCK = threading.Lock()
+_WEB_CACHE: dict[str, tuple[float, list[dict[str, str]]]] = {}
+_WEB_TTL_SECONDS = 120.0
+
+
+def _web_cache_get(query: str) -> list[dict[str, str]] | None:
+    now = time.time()
+    with _WEB_LOCK:
+        item = _WEB_CACHE.get(query)
+        if not item:
+            return None
+        ts, data = item
+        if now - ts > _WEB_TTL_SECONDS:
+            _WEB_CACHE.pop(query, None)
+            return None
+        return data
+
+
+def _web_cache_set(query: str, results: list[dict[str, str]]) -> None:
+    with _WEB_LOCK:
+        _WEB_CACHE[query] = (time.time(), results)
 
 
 # ==========================================

@@ -1,36 +1,32 @@
-# Python
+.git/
+.gitignore
+.dockerignore
+
+# Local Python/runtime files
 __pycache__/
 *.py[cod]
-*$py.class
-.Python
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.coverage
-htmlcov/
-
-# Virtual environments
 rag_env/
 venv/
 .venv/
 env/
 
-# Environment and secrets
+# Secrets and local configuration
 .env
 .env.*
-!.env.example
 frontend/.env
 frontend/.env.*
-!frontend/.env.example
 
-# Local app data and generated files
+# Local/generated data
 users.json
 faiss_index/
 temp.pdf
 temp_*.pdf
 uploads/
 
-# Frontend
+# Frontend generated dependencies/builds
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
@@ -45,8 +41,6 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Docker/build artifacts
+# Large build archives
 *.tar
 *.tgz
-build/
-dist/
