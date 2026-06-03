@@ -4,7 +4,7 @@ import './App.css'
 
 function LoginPage({ onAuthed }) {
   const apiBase = useMemo(() => {
-    return (import.meta.env.VITE_API_BASE || 'http://localhost:8000').replace(
+    return (import.meta.env.VITE_API_BASE || '').replace(
       /\/$/,
       '',
     )
@@ -23,7 +23,7 @@ function LoginPage({ onAuthed }) {
     setError('')
     setBusy(true)
     try {
-      const cleanUsername = username.trim()
+      const cleanUsername = username.trim().toLowerCase()
       const body = new URLSearchParams()
       body.set('username', cleanUsername)
       body.set('password', password)

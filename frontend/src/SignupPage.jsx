@@ -4,7 +4,7 @@ import './App.css'
 
 function SignupPage({ onAuthed }) {
   const apiBase = useMemo(() => {
-    return (import.meta.env.VITE_API_BASE || 'http://localhost:8000').replace(
+    return (import.meta.env.VITE_API_BASE || '').replace(
       /\/$/,
       '',
     )
@@ -27,7 +27,7 @@ function SignupPage({ onAuthed }) {
 
     setBusy(true)
     try {
-      const cleanUsername = username.trim()
+      const cleanUsername = username.trim().toLowerCase()
       const resp = await fetch(`${apiBase}/auth/signup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

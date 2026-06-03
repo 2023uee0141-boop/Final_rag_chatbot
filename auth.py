@@ -79,7 +79,11 @@ auth_router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 def _get_configured_username() -> str:
-    return _env("AUTH_USERNAME", "admin") or "admin"
+    return _normalize_username(_env("AUTH_USERNAME", "admin") or "admin")
+
+
+def _normalize_username(username: str | None) -> str:
+    return (username or "").strip().lower()
 
 def _load_users() -> dict[str, str]:
     if not USERS_FILE.exists():
@@ -87,7 +91,7 @@ def _load_users() -> dict[str, str]:
     try:
         data = json.loads(USERS_FILE.read_text(encoding="utf-8"))
         if isinstance(data, dict):
-            return {str(k): str(v) for k, v in data.items()}
+            return {_normalize_username(str(k)): str(v) for k, v in data.items()}
     except Exception:
         pass
     return {}
@@ -95,6 +99,12 @@ def _load_users() -> dict[str, str]:
 
 def _save_users(users: dict[str, str]) -> None:
     USERS_FILE.write_text(json.dumps(users, indent=2), encoding="utf-8")
+
+
+def _save_local_user(username: str, password_hash: str) -> None:
+    users = _load_users()
+    users[_normalize_username(username)] = password_hash
+    _save_users(users)
 
 
 def _ensure_env_admin(users: dict[str, str]) -> dict[str, str]:
@@ -132,14 +142,14 @@ def _migrate_local_users_to_mongo() -> None:
     if _LOCAL_USERS_MIGRATED or not _mongo_enabled():
         return
     for username, password_hash in _load_users().items():
-        username = username.strip()
+        username = _normalize_username(username)
         if username:
             create_user(username, password_hash)
     _LOCAL_USERS_MIGRATED = True
 
 
 def _authenticate(username: str, password: str) -> Optional[User]:
-    username = (username or "").strip()
+    username = _normalize_username(username)
     if not username:
         return None
 
@@ -201,23 +211,27 @@ def _create_access_token(subject: str, expires_minutes: int) -> str:
 
 @auth_router.post("/signup")
 def signup(req: SignupRequest) -> dict[str, str]:
-    username = req.username.strip()
+    username = _normalize_username(req.username)
     if not username:
         raise HTTPException(status_code=400, detail="Username required")
 
+    password_hash = PWD_CONTEXT.hash(req.password)
     with _USERS_LOCK:
+        users = _ensure_env_admin(_load_users())
+        users = _ensure_test_user(users)
         if _mongo_enabled():
             _ensure_env_admin({})
             _ensure_test_user({})
             _migrate_local_users_to_mongo()
-            if not create_user(username, PWD_CONTEXT.hash(req.password)):
+            if find_user(username) or username in users:
                 raise HTTPException(status_code=400, detail="Username already exists")
+            if not create_user(username, password_hash):
+                raise HTTPException(status_code=400, detail="Username already exists")
+            _save_local_user(username, password_hash)
         else:
-            users = _ensure_env_admin(_load_users())
-            users = _ensure_test_user(users)
             if username in users:
                 raise HTTPException(status_code=400, detail="Username already exists")
-            users[username] = PWD_CONTEXT.hash(req.password)
+            users[username] = password_hash
             _save_users(users)
 
     return {"status": "ok"}

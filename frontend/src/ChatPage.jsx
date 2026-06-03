@@ -6,7 +6,7 @@ import './App.css'
 
 function ChatPage({ token, onLogout }) {
   const apiBase = useMemo(() => {
-    return (import.meta.env.VITE_API_BASE || 'http://localhost:8000').replace(
+    return (import.meta.env.VITE_API_BASE || '').replace(
       /\/$/,
       '',
     )

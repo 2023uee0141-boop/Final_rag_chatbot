@@ -70,11 +70,13 @@
 }
 
 .appShell {
-  min-height: 100svh;
+  height: 100svh;
+  max-height: 100svh;
   display: grid;
   grid-template-columns: 292px minmax(0, 1fr);
   background: #ffffff;
   color: #111111;
+  overflow: hidden;
 }
 
 .appShell.sidebarClosed {
@@ -82,7 +84,7 @@
 }
 
 .gptSidebar {
-  min-height: 100svh;
+  height: 100svh;
   max-height: 100svh;
   overflow: hidden;
   background: #f9f9f9;
@@ -203,7 +205,7 @@
 
 .recentList {
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -282,10 +284,12 @@
 
 .gptMain {
   min-width: 0;
-  min-height: 100svh;
+  height: 100svh;
+  max-height: 100svh;
   display: flex;
   flex-direction: column;
   background: #ffffff;
+  overflow: hidden;
 }
 
 .gptHeader {
@@ -355,9 +359,11 @@
 
 .content {
   min-width: 0;
+  min-height: 0;
   flex: 1;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .landing {

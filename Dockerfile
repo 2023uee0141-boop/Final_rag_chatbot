@@ -15,18 +15,19 @@ WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV PORT=8001
+ENV PIP_NO_CACHE_DIR=1
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential curl \
+    && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
-RUN pip install --default-timeout=1000 --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip \
+    && pip install --default-timeout=1000 -r requirements.txt
 
-COPY . ./
+COPY . .
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 
-EXPOSE 8001
+EXPOSE 8000
 
-CMD ["sh", "-c", "uvicorn api_server:app --host 0.0.0.0 --port ${PORT}"]
+CMD ["sh", "-c", "uvicorn api_server:app --host 0.0.0.0 --port ${PORT:-8000}"]
