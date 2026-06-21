@@ -260,13 +260,9 @@ def chat(req: ChatRequest, current_user: Any = Depends(get_current_user)) -> Cha
             req.message,
             session.documents,
             session.messages[:-1],
+            vector_db=session.vector_db,
         )
 
-        if not context:
-            results = session.vector_db.similarity_search(req.message, k=5)
-            if results:
-                used_fallback_similarity = True
-                context = "\n".join([doc.page_content for doc in results])
 
         prompt = f"""
     Based on the document context below,

@@ -16,7 +16,7 @@ except Exception:
 # ==========================================
 
 def get_message_history(messages):
-    """Convert streamlit messages to conversation history string"""
+    """Convert messages to conversation history string"""
     history_text = ""
     for msg in messages:
         if msg["role"] == "user":
@@ -27,11 +27,11 @@ def get_message_history(messages):
 
 
 # ==========================================
-# QUERY REWRITE
+# QUERY GENERATION (1 LLM Call)
 # ==========================================
 
-def rewrite_query(llm, query, messages):
-    """Rewrite query using conversation context"""
+def generate_search_queries(llm, query, messages) -> list[str]:
+    """Generate 2-3 optimized search sub-queries based on history and current query."""
     history = get_message_history(messages)
     
     prompt = f"""Conversation History:
@@ -40,84 +40,32 @@ def rewrite_query(llm, query, messages):
 Current User Question:
 {query}
 
-Rewrite the current question clearly and completely, using conversation history for context. Make it standalone and self-contained."""
-
-    rewritten_query = llm.invoke(prompt).content.strip()
-    return rewritten_query
-
-
-# ==========================================
-# QUERY TRANSLATION
-# ==========================================
-
-def translate_query(llm, query):
-    """Convert query into better semantic search query"""
-    prompt = f"""Convert this query into a better semantic search query:
-
-Query: {query}
-
-Return ONLY the improved search query, nothing else."""
-
-    translated_query = llm.invoke(prompt).content.strip()
-    return translated_query
-
-
-# ==========================================
-# QUERY DECOMPOSITION
-# ==========================================
-
-def decompose_query(llm, query):
-    """Break complex query into smaller subqueries"""
-    prompt = f"""Break this query into 2-3 focused subqueries.
-Return one subquery per line, without numbering.
-
-Query: {query}"""
+Based on the conversation history and the current user question, generate 2 to 3 standalone, optimized search queries to find the most relevant information in a document.
+Return ONLY the subqueries, one per line, without numbering or bullets.
+"""
 
     response = llm.invoke(prompt).content
-
+    
     subqueries = []
     for line in response.split("\n"):
         line = line.strip()
+        # Remove any leading numbers or bullets just in case
+        line = line.lstrip("0123456789.-* ")
         if line and len(line) > 5:
             subqueries.append(line)
 
-    # If decomposition fails, return original query
     if not subqueries:
         subqueries = [query]
     
-    return subqueries
+    return subqueries[:3]  # Limit to max 3
 
 
 # ==========================================
-# QUERY ROUTING
+# HYBRID SEARCH & RRF
 # ==========================================
 
-def route_query_llm(llm, query):
-    """Classify query: pdf, math, or general"""
-    prompt = f"""Classify this query into ONE of these categories:
-- pdf (asking about document content)
-- math (mathematical calculation)
-- general (general knowledge question)
-
-Query: {query}
-
-Respond with ONLY the category name (pdf, math, or general)."""
-
-    result = llm.invoke(prompt).content.lower().strip()
-
-    if "pdf" in result:
-        return "pdf"
-    elif "math" in result:
-        return "math"
-    return "general"
-
-
-# ==========================================
-# BM25 RERANKING
-# ==========================================
-
-def rerank_chunks(query, docs):
-    """Rerank documents using BM25"""
+def rerank_chunks_bm25(query: str, docs: list[Any], top_k: int = 5) -> list[Any]:
+    """Get top K documents using BM25"""
     if not docs:
         return []
 
@@ -125,88 +73,81 @@ def rerank_chunks(query, docs):
     scores = bm25.get_scores(query.split())
 
     ranked = sorted(zip(docs, scores), key=lambda x: x[1], reverse=True)
-    return [doc for doc, score in ranked[:5]]
+    return [doc for doc, score in ranked[:top_k]]
+
+
+def reciprocal_rank_fusion(vector_results: list[Any], bm25_results: list[Any], k: int = 60) -> list[Any]:
+    """Merge Vector and BM25 results using Reciprocal Rank Fusion."""
+    scores: dict[str, float] = {}
+    doc_map: dict[str, Any] = {}
+
+    def add_ranks(results: list[Any]):
+        for rank, doc in enumerate(results):
+            # Use page_content as a unique identifier for the chunk
+            doc_id = doc.page_content
+            if doc_id not in scores:
+                scores[doc_id] = 0.0
+                doc_map[doc_id] = doc
+            scores[doc_id] += 1.0 / (k + rank + 1)
+
+    add_ranks(vector_results)
+    add_ranks(bm25_results)
+
+    # Sort by RRF score descending
+    sorted_docs = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    
+    # Return documents
+    return [doc_map[doc_id] for doc_id, score in sorted_docs]
 
 
 # ==========================================
-# RELEVANCE FILTER
+# ADVANCED SEARCH MODE
 # ==========================================
 
-def filter_relevant_chunks(llm, query, docs):
-    """Filter documents by relevance score"""
-    if not docs:
-        return []
-
-    # Batch relevance scoring into a single LLM call (much faster than 1 call per chunk).
-    chunks = "\n\n".join(
-        [
-            f"[{i+1}] {doc.page_content[:500]}"
-            for i, doc in enumerate(docs)
-        ]
-    )
-
-    prompt = f"""You will select which chunks are relevant to the query.
-
-Query: {query}
-
-Chunks:
-{chunks}
-
-Return ONLY the numbers of chunks that are relevant (score 7-10), one per line.
-If none are relevant, return NONE.
-"""
-
-    try:
-        response = (llm.invoke(prompt).content or "").strip()
-        lower = response.lower()
-        if "none" in lower:
-            return []
-
-        picked: list[int] = []
-        for line in response.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            # Accept formats like "1", "[1]", "1.".
-            digits = "".join([c for c in line if c.isdigit()])
-            if not digits:
-                continue
-            idx = int(digits) - 1
-            if 0 <= idx < len(docs):
-                picked.append(idx)
-
-        if not picked:
-            # Conservative fallback: if parsing fails, keep all.
-            return docs
-        # Preserve order, de-dup.
-        seen = set()
-        out = []
-        for idx in picked:
-            if idx not in seen:
-                out.append(docs[idx])
-                seen.add(idx)
-        return out
-    except Exception:
-        # If anything goes wrong, don't block retrieval.
-        return docs
-
-
-# ==========================================
-# REMOVE DUPLICATES
-# ==========================================
-
-def remove_duplicates(docs):
-    """Remove duplicate documents"""
+def retrieve_context_advanced(llm, query: str, docs: list[Any], messages: list[dict[str, str]], vector_db=None):
+    """Advanced retrieval using Hybrid Search (Vector + BM25) and RRF"""
+    
+    # 1. Generate optimized sub-queries (Single LLM call)
+    subqueries = generate_search_queries(llm, query, messages)
+    
+    all_hybrid_results = []
+    
+    # 2. Hybrid Search for each sub-query
+    for subquery in subqueries:
+        
+        # A. Vector Search (if available)
+        vector_results = []
+        if vector_db:
+            try:
+                vector_results = vector_db.similarity_search(subquery, k=5)
+            except Exception:
+                pass
+                
+        # B. BM25 Search
+        bm25_results = rerank_chunks_bm25(subquery, docs, top_k=5)
+        
+        # C. Merge with RRF
+        merged_results = reciprocal_rank_fusion(vector_results, bm25_results)
+        
+        # Keep top 5 from this subquery's merged results
+        all_hybrid_results.extend(merged_results[:5])
+    
+    # 3. Deduplicate final results across all subqueries
     unique_docs = []
-    seen = set()
-
-    for doc in docs:
-        content = doc.page_content
-        if content not in seen:
+    seen_content = set()
+    for doc in all_hybrid_results:
+        if doc.page_content not in seen_content:
             unique_docs.append(doc)
-            seen.add(content)
-
-    return unique_docs
+            seen_content.add(doc.page_content)
+    
+    # Return top 10 unique merged chunks max
+    final_docs = unique_docs[:10]
+    
+    if final_docs:
+        context = "\n\n".join([doc.page_content for doc in final_docs])
+        return context, subqueries
+    
+    return "", subqueries
 
 
 # ==========================================
@@ -292,74 +233,3 @@ def _web_cache_get(query: str) -> list[dict[str, str]] | None:
 def _web_cache_set(query: str, results: list[dict[str, str]]) -> None:
     with _WEB_LOCK:
         _WEB_CACHE[query] = (time.time(), results)
-
-
-# ==========================================
-# CONTEXT RETRIEVAL PIPELINE
-# ==========================================
-
-def get_pdf_context(llm, query, docs):
-    """Full RAG pipeline for PDF context retrieval"""
-    # Rewrite query
-    rewritten_query = rewrite_query(llm, query, [])
-    
-    # Translate query for better search
-    translated_query = translate_query(llm, rewritten_query)
-    
-    # Decompose into subqueries
-    subqueries = decompose_query(llm, translated_query)
-    
-    all_docs = []
-    
-    # Process each subquery
-    for subquery in subqueries:
-        # Rank chunks
-        ranked_docs = rerank_chunks(subquery, docs)
-        
-        # Filter by relevance
-        relevant_docs = filter_relevant_chunks(llm, subquery, ranked_docs)
-        
-        all_docs.extend(relevant_docs)
-    
-    # Remove duplicates
-    final_docs = remove_duplicates(all_docs)
-    
-    # Build context from documents
-    if final_docs:
-        context = "\n\n".join([doc.page_content for doc in final_docs])
-        return context
-    
-    return ""
-
-
-# ==========================================
-# ADVANCED SEARCH MODE
-# ==========================================
-
-def retrieve_context_advanced(llm, query, docs, messages):
-    """Advanced retrieval using full pipeline with conversation context"""
-    # Rewrite with conversation context
-    rewritten_query = rewrite_query(llm, query, messages)
-    
-    # Translate for better search
-    translated_query = translate_query(llm, rewritten_query)
-    
-    # Decompose into subqueries
-    subqueries = decompose_query(llm, translated_query)
-    
-    all_docs = []
-    
-    # Process each subquery
-    for subquery in subqueries:
-        ranked_docs = rerank_chunks(subquery, docs)
-        relevant_docs = filter_relevant_chunks(llm, subquery, ranked_docs)
-        all_docs.extend(relevant_docs)
-    
-    # Remove duplicates
-    final_docs = remove_duplicates(all_docs)
-    
-    if final_docs:
-        context = "\n\n".join([doc.page_content for doc in final_docs])
-        return context, subqueries
-    
-    return "", subqueries
